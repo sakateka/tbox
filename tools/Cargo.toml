@@ -1,0 +1,17 @@
+[package]
+name = "tbox"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+starlark = "0.14.2"
+percent-encoding = "2"
+rand = "0.8"
+reqwest = { version = "0.12", features = ["blocking"] }
+serde = { version = "1.0.219", features = ["derive"] }
+toml = "0.8.20"
+
+[dev-dependencies]
+tempfile = "3"
+openssl = "0.10"

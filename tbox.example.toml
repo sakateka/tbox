@@ -1,0 +1,46 @@
+# All paths are relative to this configuration file; ~ is expanded.
+[aliases]
+greet = "hello"
+
+[commands]
+opener = ["xdg-open"]
+python = ["python3"]
+
+[roots]
+workspace = "~/workspace"
+
+[links.page]
+url = "https://example.com/items/{value}?view=summary"
+command = "opener"
+
+[http.lookup]
+url = "https://api.example.com/items/{value}"
+method = "GET"
+timeout_secs = 30
+# token_env = "EXAMPLE_TOKEN"
+# token_file = "secrets/example-token" # choose one token reference
+# auth_scheme = "OAuth"             # default; Basic is unsupported
+# ca_file = "certificates/roots.pem" # supplements normal trusted roots
+
+[settings]
+greeting = "Hello"
+
+[applets.hello]
+description = "Print a configured greeting."
+usage = "hello <name>"
+script = '''
+def main(args):
+    if len(args) != 1:
+        fail("Usage: hello <name>")
+    emit(setting("greeting") + ", " + args[0] + "!\n")
+'''
+
+[applets.lookup]
+description = "Fetch an item using the configured HTTP profile."
+usage = "lookup <value>"
+script = '''
+def main(args):
+    if len(args) != 1:
+        fail("Usage: lookup <value>")
+    emit(http_request("lookup", {"value": args[0]}))
+'''
