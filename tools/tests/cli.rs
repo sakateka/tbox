@@ -93,6 +93,36 @@ fn inline_toml_example_runs_without_other_files() {
     assert_eq!(entries.len(), 1, "Only the TOML config is needed");
 }
 
+#[test]
+fn math_avoids_python_for_arithmetic_and_preserves_python_fallback() {
+    let f = Fixture::new(include_str!("../../tbox.example.toml"));
+    f.configure("[commands]\npython = ['/missing/python-must-not-be-started']\n");
+    for (expression, expected) in [
+        ("1+2", "3\n"),
+        ("1/2", "0.5\n"),
+        ("2**8", "256\n"),
+        ("sqrt(9)", "3.0\n"),
+        ("sin(pi/2)", "1.0\n"),
+    ] {
+        assert_eq!(success(f.run(&["calc", expression])), expected);
+    }
+    failure(
+        f.run(&["calc", "sum(range(10))"]),
+        "Cannot execute command binding 'python'",
+    );
+    f.configure("[commands]\npython = ['python3']\n");
+    for (expression, expected) in [
+        ("sum(range(10))", "45\n"),
+        ("[x*x for x in range(3)]", "[0, 1, 4]\n"),
+        ("__import__('decimal').Decimal('0.1')*3", "0.3\n"),
+    ] {
+        assert_eq!(success(f.run(&["calc", expression])), expected);
+    }
+    assert_eq!(success(f.run(&["calc", "1", "/", "2"])), "0.5\n");
+    let error = failure(f.run(&["calc"]), "Expected an expression");
+    assert!(error.contains("Usage: tbox calc <expression...>"));
+}
+
 #[cfg(unix)]
 #[test]
 fn regression_executable_alias_forwards_config_arguments() {
@@ -198,8 +228,9 @@ fn discovery_help_aliases_and_changes_need_no_rebuild() {
             .filter(|line| line.starts_with("  ") && line.contains("Synthetic"))
             .map(|line| line.split_whitespace().next().unwrap())
             .collect();
-        assert_eq!(names, ["alternate", "short", "zebra"]);
-        assert!(listed.contains("Synthetic echoer applet."));
+        assert_eq!(names, ["short", "zebra"]);
+        assert_eq!(listed.matches("Synthetic echoer applet.").count(), 1);
+        assert!(!listed.contains("alternate"));
     }
     for args in [["zebra", "--help"], ["short", "-h"]] {
         let text = success(f.run(&args));
@@ -227,6 +258,23 @@ fn discovery_help_aliases_and_changes_need_no_rebuild() {
     assert_eq!(success(f.run(&["echoer"])), "updated");
     f.script("newone", "def main(args):\n    emit('new')\n");
     assert_eq!(success(f.run(&["newone"])), "new");
+}
+
+#[test]
+fn listing_prefers_an_alias_even_when_the_applet_name_is_shorter() {
+    let f = Fixture::new("[aliases]\nalternate = 'x'\npreferred = 'x'\n");
+    f.script("x", "def main(args):\n    emit('ok')\n");
+    let listed = success(f.run(&["--list"]));
+    let names: Vec<_> = listed
+        .lines()
+        .filter(|line| line.starts_with("  ") && line.contains("Synthetic"))
+        .map(|line| line.split_whitespace().next().unwrap())
+        .collect();
+    assert_eq!(names, ["alternate"]);
+    assert!(!listed.contains("preferred"));
+    for name in ["x", "alternate", "preferred"] {
+        assert_eq!(success(f.run(&[name])), "ok");
+    }
 }
 
 #[test]
@@ -319,14 +367,82 @@ fn script_errors_include_locations_and_help_never_parses_scripts() {
     success(f.run(&["broken", "--help"]));
     let error = failure(f.run(&["broken"]), "config.toml[applets.broken.script]");
     assert!(error.contains(":2"));
+    assert!(error.contains("Synthetic broken applet.\n\nUsage: tbox broken <value>"));
+    assert!(!error.contains("Traceback"), "{error}");
     f.script("broken", "def main(args):\n    fail('synthetic failure')\n");
     let error = failure(f.run(&["broken"]), "synthetic failure");
     assert!(
         error.contains("config.toml[applets.broken.script]:2"),
         "{error}"
     );
+    assert!(!error.contains("Traceback"), "{error}");
+    assert!(!error.contains("fail:"), "{error}");
+    f.script("broken", "def main(args):\n    emit(1 // 0)\n");
+    let error = failure(f.run(&["broken"]), "config.toml[applets.broken.script]:2");
+    assert!(error.contains("Usage: tbox broken <value>"), "{error}");
+    assert!(!error.contains("Traceback"), "{error}");
     f.script("broken", "def other(args):\n    pass\n");
-    failure(f.run(&["broken"]), "main(args)");
+    let error = failure(f.run(&["broken"]), "main(args)");
+    assert!(error.contains("config.toml[applets.broken.script]"));
+    assert!(error.contains("Usage: tbox broken <value>"));
+    f.script("broken", "fail('module failure')\n");
+    let error = failure(f.run(&["broken"]), "module failure");
+    assert!(error.contains("config.toml[applets.broken.script]:1:1"));
+    assert!(error.contains("Usage: tbox broken <value>"));
+    assert!(!error.contains("Traceback"), "{error}");
+}
+
+#[test]
+fn invalid_arguments_show_reason_location_description_and_invoked_usage() {
+    let f = Fixture::new("[aliases]\nshort = 'sample'\n");
+    f.script(
+        "sample",
+        "def validate(args):\n    if len(args) != 1:\n        fail('Expected exactly one argument; got ' + str(len(args)))\ndef main(args):\n    validate(args)\n    emit(args[0])\n",
+    );
+    for name in ["sample", "short"] {
+        for args in [vec![name], vec![name, "one", "two"]] {
+            let output = f.run(&args);
+            assert_eq!(output.status.code(), Some(1));
+            assert!(output.stdout.is_empty());
+            let error = String::from_utf8(output.stderr).unwrap();
+            assert_eq!(
+                error,
+                format!(
+                    "tbox: {name}: Expected exactly one argument; got {}\n  at {}[applets.sample.script]:3:9\n\nSynthetic sample applet.\n\nUsage: tbox {name} <value>\n",
+                    args.len() - 1,
+                    f.config.display()
+                )
+            );
+        }
+        assert_eq!(success(f.run(&[name, "value"])), "value");
+        assert_eq!(
+            success(f.run(&[name, "--help"])),
+            format!("Synthetic sample applet.\n\nUsage: tbox {name} <value>\n")
+        );
+    }
+
+    #[cfg(unix)]
+    {
+        let alias = f.temp.path().join("short");
+        std::os::unix::fs::symlink(env!("CARGO_BIN_EXE_tbox"), &alias).unwrap();
+        let run = |args: &[&str]| {
+            Command::new(&alias)
+                .env("TBOX_CONFIG", &f.config)
+                .args(args)
+                .output()
+                .unwrap()
+        };
+        let error = failure(
+            run(&[]),
+            "tbox: short: Expected exactly one argument; got 0",
+        );
+        assert!(error.ends_with("Usage: short <value>\n"), "{error}");
+        assert!(!error.contains("Traceback"), "{error}");
+        assert_eq!(
+            success(run(&["--help"])),
+            "Synthetic sample applet.\n\nUsage: short <value>\n"
+        );
+    }
 }
 
 fn read_request(stream: &mut impl Read) -> String {

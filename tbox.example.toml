@@ -31,7 +31,7 @@ usage = "hello <name>"
 script = '''
 def main(args):
     if len(args) != 1:
-        fail("Usage: hello <name>")
+        fail("Expected exactly one name; got " + str(len(args)))
     emit(setting("greeting") + ", " + args[0] + "!\n")
 '''
 
@@ -41,6 +41,21 @@ usage = "lookup <value>"
 script = '''
 def main(args):
     if len(args) != 1:
-        fail("Usage: lookup <value>")
+        fail("Expected exactly one value; got " + str(len(args)))
     emit(http_request("lookup", {"value": args[0]}))
+'''
+
+[applets.calc]
+description = "Evaluate an expression using Python math."
+usage = "calc <expression...>"
+script = '''
+def main(args):
+    if not args:
+        fail("Expected an expression")
+    expression = " ".join(args)
+    result = fast_math(expression)
+    if result == None:
+        run_command("python", ["-c", "from math import *; print(" + expression + ")"])
+    else:
+        emit(result + "\n")
 '''

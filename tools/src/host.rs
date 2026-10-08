@@ -1,11 +1,15 @@
-use crate::{config::Config, http};
+use crate::{config::Config, http, math};
 use anyhow::{Context, Result, bail};
 use rand::{Rng, rngs::OsRng};
 use starlark::{
     environment::GlobalsBuilder,
     eval::Evaluator,
     starlark_module,
-    values::{dict::UnpackDictEntries, list::UnpackList, none::NoneType},
+    values::{
+        dict::UnpackDictEntries,
+        list::UnpackList,
+        none::{NoneOr, NoneType},
+    },
 };
 use std::{
     collections::BTreeMap,
@@ -38,6 +42,10 @@ fn command(config: &Config, name: &str, args: &[String]) -> Result<()> {
 
 #[starlark_module]
 pub fn functions(builder: &mut GlobalsBuilder) {
+    fn fast_math(expression: &str) -> anyhow::Result<NoneOr<String>> {
+        Ok(NoneOr::from_option(math::evaluate(expression)))
+    }
+
     fn emit(text: &str) -> anyhow::Result<NoneType> {
         let mut stdout = io::stdout().lock();
         stdout.write_all(text.as_bytes())?;

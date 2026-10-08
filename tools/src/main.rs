@@ -1,10 +1,11 @@
 mod config;
 mod host;
 mod http;
+mod math;
 mod runtime;
 
 use anyhow::{Result, bail};
-use config::Config;
+use config::{Applet, Config};
 use std::{
     collections::BTreeMap,
     path::{Path, PathBuf},
@@ -15,15 +16,15 @@ fn print_applets(cfg: &Config) {
         "Usage: tbox [--config PATH] <applet> [args...]\n       <alias> [args...]\n\nAvailable applets:"
     );
     let mut commands = BTreeMap::new();
-    for (alias, target) in &cfg.aliases {
-        if let Some(applet) = cfg.applets.get(target) {
-            commands.insert(alias, applet);
-        }
-    }
     for (name, applet) in &cfg.applets {
-        if !cfg.aliases.values().any(|target| target == name) {
-            commands.entry(name).or_insert(applet);
-        }
+        let display_name = cfg
+            .aliases
+            .iter()
+            .filter(|(_, target)| *target == name)
+            .map(|(alias, _)| alias)
+            .min_by_key(|alias| (alias.len(), *alias))
+            .unwrap_or(name);
+        commands.insert(display_name, applet);
     }
     for (name, applet) in commands {
         println!(
@@ -40,6 +41,26 @@ fn print_applets(cfg: &Config) {
         println!("  Select another config with --config PATH / TBOX_CONFIG.");
     }
     println!("\nRun 'tbox <applet> --help' for applet help.");
+}
+
+fn applet_help(applet: &Applet, target: &str, name: &str, direct: bool) -> String {
+    let prefix = if direct { "tbox " } else { "" };
+    let usage = applet
+        .usage
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            let command = match line.strip_prefix(target) {
+                Some(rest) if rest.is_empty() || rest.starts_with(char::is_whitespace) => {
+                    format!("{name}{rest}")
+                }
+                _ => line.to_owned(),
+            };
+            format!("{prefix}{command}")
+        })
+        .collect::<Vec<_>>()
+        .join("\n       ");
+    format!("{}\n\nUsage: {usage}", applet.description.trim())
 }
 
 fn run() -> Result<()> {
@@ -88,11 +109,13 @@ fn run() -> Result<()> {
     let meta = cfg.applets.get(target).ok_or_else(|| {
         anyhow::anyhow!("Unknown applet '{target}'. Run 'tbox --list' to see available applets.")
     })?;
+    let help = applet_help(meta, target, &name, executable == "tbox");
     if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h") {
-        println!("{}\n\nUsage: tbox {}", meta.description, meta.usage);
+        println!("{help}");
         return Ok(());
     }
     runtime::run(&cfg, target, &args)
+        .map_err(|error| anyhow::anyhow!("{name}: {error:#}\n\n{help}"))
 }
 
 fn main() {
